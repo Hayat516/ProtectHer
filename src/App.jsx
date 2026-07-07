@@ -1,7 +1,7 @@
 import { Routes, Route } from 'react-router-dom'
 import HomePage from './pages/Home/index.jsx'
 import ReportPage from './pages/Report/index.jsx'
-import CaseConfirmationPage from './pages/CaseConfirmation/index.jsx'
+import CaseConfirmationPage from './pages/CaseConfirmationPage/index.jsx'
 import TrackingPage from './pages/Tracking/index.jsx'
 import GetHelpPage from './pages/GetHelp/index.jsx'
 import CounsellingPage from './pages/Counselling/index.jsx'
