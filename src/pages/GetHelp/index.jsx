@@ -107,7 +107,7 @@ function GetHelpPage() {
               </button>
               <a href="https://google.com" target="_blank" rel="noopener noreferrer"
                 className="flex items-center gap-2 w-full px-3 py-2.5 text-sm font-bold text-red-600 hover:bg-red-50 rounded-lg">
-                ⚡ Quick Exit
+                Quick Exit
               </a>
             </div>
           )}

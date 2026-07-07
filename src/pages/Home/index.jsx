@@ -32,7 +32,7 @@ function HomePage() {
             </a>
 
             {/* Desktop Nav Links — Centered */}
-            <div className="hidden md:flex items-center gap-8 absolute left-1/2 transform -translate-x-1/2">
+            <div className="hidden lg:flex items-center gap-8 absolute left-1/2 transform -translate-x-1/2">
               <a href="/" className="text-sm font-medium text-gray-600 hover:text-purple-700 transition-colors duration-200">
                 Home
               </a>
@@ -48,7 +48,7 @@ function HomePage() {
             </div>
 
             {/* Right Side */}
-            <div className="hidden md:flex items-center gap-3">
+            <div className="hidden lg:flex items-center gap-3">
               <button
                 onClick={() => navigate('/report')}
                 className="text-sm font-medium text-purple-700 hover:text-purple-800 transition-colors duration-200"
@@ -67,7 +67,7 @@ function HomePage() {
 
             {/* Mobile Menu Toggle */}
             <button
-              className="md:hidden p-2 rounded-lg hover:bg-gray-100 transition-colors"
+              className="lg:hidden p-2 rounded-lg hover:bg-gray-100 transition-colors"
               onClick={() => setIsMenuOpen(!isMenuOpen)}
               aria-label="Toggle menu"
             >
@@ -77,7 +77,7 @@ function HomePage() {
 
           {/* Mobile Menu */}
           {isMenuOpen && (
-            <div className="md:hidden py-4 border-t border-gray-100 space-y-1">
+            <div className="lg:hidden py-4 border-t border-gray-100 space-y-1">
               {[
                 { label: 'Home', href: '/' },
                 { label: 'Get Help', href: '/get-help' },
@@ -141,10 +141,9 @@ function HomePage() {
   {/* Centered Content */}
   <div className="relative max-w-3xl mx-auto text-center">
 
-    <div className="inline-flex items-center gap-2 bg-white/15 backdrop-blur-sm text-white/90 px-4 py-2 rounded-full text-xs font-semibold mb-8 border border-white/20">
-      <Lock className="w-3.5 h-3.5" />
-      Safe. Anonymous. Trusted. Available 24/7.
-    </div>
+      <p className="text-purple-300/70 text-xs font-semibold uppercase tracking-widest mb-7">
+      For women in Nigeria
+    </p>
 
     <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold text-white leading-[1.1] mb-6 tracking-tight">
       You Are Not Alone.

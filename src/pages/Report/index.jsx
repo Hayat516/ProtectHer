@@ -1,8 +1,13 @@
-import { useState } from 'react'
-import { Shield, ArrowLeft, ArrowRight, Lock, AlertCircle, ChevronDown, Home, Upload, X } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import {
+  Shield, ArrowLeft, ArrowRight, Lock, AlertCircle,
+  ChevronDown, Home, Upload, X, Save, Clock
+} from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../../supabaseClient'
 import emailjs from '@emailjs/browser'
+
+const DRAFT_KEY = 'protecther_report_draft'
 
 const NIGERIAN_STATES = [
   'Abia','Adamawa','Akwa Ibom','Anambra','Bauchi','Bayelsa','Benue','Borno',
@@ -13,7 +18,7 @@ const NIGERIAN_STATES = [
 ]
 
 const INCIDENT_TYPES = [
-  { value: 'Physical Violence', label: 'Someone hurt me physically, hitting, beating, or any physical harm' },
+  { value: 'Physical Violence', label: 'Someone hurt me physically; hitting, beating, or any physical harm' },
   { value: 'Sexual Violence', label: 'I was touched, forced, or abused in a sexual way without my consent' },
   { value: 'Emotional / Psychological Abuse', label: 'I was threatened, controlled, humiliated, or made to feel worthless' },
   { value: 'Economic Abuse', label: 'Someone took my money, stopped me from working, or controlled my finances' },
@@ -31,22 +36,40 @@ const generateCaseId = () => {
   return `PTH-${year}-${random}`
 }
 
+const EMPTY_FORM = {
+  incidentType: '', description: '', incidentDate: '',
+  dateUncertain: false, state: '', lga: '', contactEmail: '', consent: false,
+}
+
 function ReportPage() {
   const navigate = useNavigate()
-  const [formData, setFormData] = useState({
-    incidentType: '',
-    description: '',
-    incidentDate: '',
-    dateUncertain: false,
-    state: '',
-    lga: '',
-    contactEmail: '',
-    consent: false,
+  const [formData, setFormData] = useState(() => {
+    // Load draft on mount
+    try {
+      const saved = localStorage.getItem(DRAFT_KEY)
+      if (saved) return { ...EMPTY_FORM, ...JSON.parse(saved) }
+    } catch {}
+    return EMPTY_FORM
   })
+
   const [evidenceFile, setEvidenceFile] = useState(null)
   const [evidencePreview, setEvidencePreview] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [draftSaved, setDraftSaved] = useState(false)
+  const [hasDraft, setHasDraft] = useState(false)
+
+  useEffect(() => {
+    const existing = localStorage.getItem(DRAFT_KEY)
+    if (existing) {
+      try {
+        const parsed = JSON.parse(existing)
+        if (parsed.description || parsed.incidentType || parsed.state) {
+          setHasDraft(true)
+        }
+      } catch {}
+    }
+  }, [])
 
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target
@@ -55,6 +78,24 @@ function ReportPage() {
       [name]: type === 'checkbox' ? checked : value,
       ...(name === 'dateUncertain' && checked ? { incidentDate: '' } : {}),
     }))
+    setDraftSaved(false)
+  }
+
+  const handleSaveDraft = () => {
+    const draftData = { ...formData }
+    delete draftData.consent // don't save consent
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(draftData))
+    setDraftSaved(true)
+    setHasDraft(true)
+    setTimeout(() => setDraftSaved(false), 3000)
+  }
+
+  const handleClearDraft = () => {
+    localStorage.removeItem(DRAFT_KEY)
+    setFormData(EMPTY_FORM)
+    setEvidenceFile(null)
+    setEvidencePreview(null)
+    setHasDraft(false)
   }
 
   const handleFileChange = (e) => {
@@ -77,27 +118,30 @@ function ReportPage() {
   const handleSubmit = async () => {
     setError('')
     if (!formData.incidentType) return setError('Please choose what kind of incident this was.')
-    if (formData.description.trim().length < 20) return setError('Please tell us a little more about what happened, at least a few words.')
-    if (!formData.state) return setError('Please let us know which state this happened in so we can connect you with the right support.')
+    if (formData.description.trim().length < 20) return setError('Please tell us a little more about what happened.')
+    if (!formData.state) return setError('Please let us know which state this happened in.')
     if (!formData.consent) return setError('Please check the privacy box at the bottom to continue.')
 
     setLoading(true)
     try {
       const caseId = generateCaseId()
-      let evidenceUrl = null
+      let evidenceFileUrl = null
 
-      // Upload evidence photo if provided
       if (evidenceFile) {
         const fileExt = evidenceFile.name.split('.').pop()
         const fileName = `${caseId}-evidence.${fileExt}`
         const { error: uploadError } = await supabase.storage
           .from('evidence')
-          .upload(fileName, evidenceFile)
-        if (!uploadError) {
-          const { data: urlData } = supabase.storage
+          .upload(fileName, evidenceFile, { upsert: true })
+
+        if (uploadError) {
+          console.error('Upload error:', uploadError)
+        } else {
+          const { data: publicUrlData } = supabase.storage
             .from('evidence')
             .getPublicUrl(fileName)
-          evidenceUrl = urlData?.publicUrl || null
+          evidenceFileUrl = publicUrlData?.publicUrl || null
+          console.log('Evidence URL:', evidenceFileUrl)
         }
       }
 
@@ -109,21 +153,21 @@ function ReportPage() {
         state: formData.state,
         lga: formData.lga.trim() || null,
         contact_email: formData.contactEmail.trim() || null,
-        evidence_file_url: evidenceUrl,
+        evidence_file_url: evidenceFileUrl,
         status: 'submitted',
       }])
 
       if (dbError) throw dbError
+
+      // Clear draft on successful submission
+      localStorage.removeItem(DRAFT_KEY)
 
       if (formData.contactEmail.trim()) {
         try {
           await emailjs.send(
             import.meta.env.VITE_EMAILJS_SERVICE_ID,
             import.meta.env.VITE_EMAILJS_TEMPLATE_ID,
-            {
-              to_email: formData.contactEmail.trim(),
-              case_id: caseId,
-            },
+            { to_email: formData.contactEmail.trim(), case_id: caseId },
             import.meta.env.VITE_EMAILJS_PUBLIC_KEY
           )
         } catch (emailErr) {
@@ -145,7 +189,6 @@ function ReportPage() {
     <div className="w-full min-h-screen text-gray-800 overflow-x-hidden"
       style={{ background: 'linear-gradient(160deg, #FAF5FF 0%, #F3E8FF 40%, #EDE9FE 100%)' }}>
 
-      {/* Navbar */}
       <nav className="sticky top-0 z-50 bg-white border-b border-purple-100 shadow-sm">
         <div className="max-w-7xl mx-auto px-6 md:px-12">
           <div className="flex items-center justify-between py-4">
@@ -162,18 +205,17 @@ function ReportPage() {
               </button>
               <a href="https://google.com" target="_blank" rel="noopener noreferrer"
                 className="text-sm bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg font-bold transition-colors shadow-lg">
-               Quick Exit
+                 Quick Exit
               </a>
             </div>
           </div>
         </div>
       </nav>
 
-      {/* Safety Banner */}
       <div className="bg-purple-700 text-white text-center py-3 px-6">
         <div className="flex items-center justify-center gap-2 text-sm">
           <Lock className="w-4 h-4 flex-shrink-0" />
-          <span>Your report is completely anonymous. You do not need to give your name or create an account.</span>
+          <span>Your report is completely anonymous. No account or personal information is required.</span>
         </div>
       </div>
 
@@ -184,15 +226,38 @@ function ReportPage() {
             className="flex items-center gap-2 text-sm text-purple-700 hover:text-purple-900 mb-6 bg-white hover:bg-purple-50 px-4 py-2.5 rounded-xl border border-purple-200 shadow-sm font-semibold w-fit transition-colors">
             <ArrowLeft className="w-4 h-4" /> Back to Home
           </button>
-          <span className="text-xs font-bold text-purple-500 uppercase tracking-widest mb-2 block">
-            Safe & Confidential
-          </span>
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-gray-900 mb-3">
-            Tell us what happened
-          </h1>
+
+          <div className="flex items-start justify-between gap-4 flex-wrap mb-2">
+            <div>
+              <span className="text-xs font-bold text-purple-500 uppercase tracking-widest mb-2 block">Safe & Confidential</span>
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-gray-900 mb-3">Tell us what happened</h1>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <button onClick={handleSaveDraft}
+                className="flex items-center gap-1.5 text-xs text-purple-700 bg-white hover:bg-purple-50 px-3 py-2 rounded-xl border border-purple-200 font-semibold transition-colors">
+                <Save className="w-3.5 h-3.5" />
+                {draftSaved ? 'Saved ✓' : 'Save Draft'}
+              </button>
+              {hasDraft && (
+                <button onClick={handleClearDraft}
+                  className="text-xs text-gray-400 hover:text-red-600 px-3 py-2 rounded-xl border border-gray-200 hover:border-red-200 font-semibold transition-colors">
+                  Clear Draft
+                </button>
+              )}
+            </div>
+          </div>
+
+          {hasDraft && (
+            <div className="flex items-center gap-2 bg-amber-50 border border-amber-100 rounded-xl px-4 py-2.5 mb-2">
+              <Clock className="w-4 h-4 text-amber-600 flex-shrink-0" />
+              <p className="text-xs text-amber-700">
+                A saved draft has been loaded. Your progress is preserved.
+              </p>
+            </div>
+          )}
+
           <p className="text-gray-500 text-sm leading-relaxed max-w-md">
-            Take your time. You are in control of what you share.
-            There are no wrong answers here and no pressure to include more than you want to.
+            Take your time. There are no wrong answers. Share only what you feel comfortable with.
           </p>
         </div>
 
@@ -204,7 +269,7 @@ function ReportPage() {
               What happened to you? <span className="text-red-500">*</span>
             </label>
             <p className="text-xs text-gray-400 mb-3">
-              Choose the one that feels closest. You can explain more in your own words below.
+              Choose the one that feels closest. You can explain more below.
             </p>
             <div className="space-y-2">
               {INCIDENT_TYPES.map((type) => (
@@ -214,14 +279,10 @@ function ReportPage() {
                       ? 'border-purple-500 bg-purple-50'
                       : 'border-gray-100 hover:border-purple-200 hover:bg-purple-50/30'
                   }`}>
-                  <input
-                    type="radio"
-                    name="incidentType"
-                    value={type.value}
+                  <input type="radio" name="incidentType" value={type.value}
                     checked={formData.incidentType === type.value}
                     onChange={handleChange}
-                    className="mt-0.5 accent-purple-700 flex-shrink-0"
-                  />
+                    className="mt-0.5 accent-purple-700 flex-shrink-0" />
                   <span className="text-sm text-gray-700 leading-relaxed">{type.label}</span>
                 </label>
               ))}
@@ -236,39 +297,30 @@ function ReportPage() {
             <p className="text-xs text-gray-400 mb-3">
               Write as much or as little as you want. Your words will only be seen by the NGO assigned to support you.
             </p>
-            <textarea
-              name="description"
-              value={formData.description}
-              onChange={handleChange}
+            <textarea name="description" value={formData.description} onChange={handleChange}
               rows={6}
               placeholder="You can start with: 'What happened was...' just write whatever comes to mind. Take your time."
-              className="w-full bg-purple-50 border-2 border-purple-100 text-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-400 transition-all resize-none leading-relaxed placeholder-gray-400"
-            />
+              className="w-full bg-purple-50 border-2 border-purple-100 text-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-400 transition-all resize-none leading-relaxed placeholder-gray-400" />
             <p className="text-xs text-gray-400 mt-1">{formData.description.length} characters</p>
           </div>
 
-          {/* Evidence Photo Upload — optional */}
+          {/* Evidence Upload */}
           <div>
             <label className="block text-sm font-bold text-gray-800 mb-1">
               Do you have a photo you want to include?
               <span className="text-gray-400 font-normal ml-1">(optional)</span>
             </label>
             <p className="text-xs text-gray-400 mb-3">
-              If you have a photo that shows what happened, an injury, a message, or anything relevant
-              you can upload it here. This is completely optional. Maximum size: 5MB.
-              The photo will only be visible to the NGO supporting your case.
+              If you have a photo that shows what happened; an injury, a message, or anything relevant,
+              you can upload it here. Maximum 5MB. The photo will only be visible to the NGO supporting your case.
             </p>
 
             {evidencePreview ? (
               <div className="relative w-fit">
-                <img
-                  src={evidencePreview}
-                  alt="Evidence preview"
-                  className="w-40 h-40 object-cover rounded-2xl border-2 border-purple-200"
-                />
-                <button
-                  onClick={removeFile}
-                  className="absolute -top-2 -right-2 w-6 h-6 bg-red-600 hover:bg-red-700 text-white rounded-full flex items-center justify-center shadow-lg transition-colors">
+                <img src={evidencePreview} alt="Evidence preview"
+                  className="w-40 h-40 object-cover rounded-2xl border-2 border-purple-200" />
+                <button onClick={removeFile}
+                  className="absolute -top-2 -right-2 w-6 h-6 bg-red-600 hover:bg-red-700 text-white rounded-full flex items-center justify-center shadow-lg">
                   <X className="w-3.5 h-3.5" />
                 </button>
                 <p className="text-xs text-gray-400 mt-2">{evidenceFile?.name}</p>
@@ -277,45 +329,27 @@ function ReportPage() {
               <label className="flex flex-col items-center justify-center gap-3 w-full h-32 bg-purple-50 border-2 border-dashed border-purple-200 rounded-2xl cursor-pointer hover:border-purple-400 hover:bg-purple-50/70 transition-all">
                 <Upload className="w-6 h-6 text-purple-400" />
                 <span className="text-sm text-purple-500 font-semibold">Click to upload a photo</span>
-                <span className="text-xs text-gray-400">PNG, JPG, JPEG: max 5MB</span>
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/jpg"
-                  onChange={handleFileChange}
-                  className="hidden"
-                />
+                <span className="text-xs text-gray-400">PNG, JPG, JPEG — max 5MB</span>
+                <input type="file" accept="image/png,image/jpeg,image/jpg"
+                  onChange={handleFileChange} className="hidden" />
               </label>
             )}
           </div>
 
           {/* Date */}
           <div>
-            <label className="block text-sm font-bold text-gray-800 mb-1">
-              When did this happen?
-            </label>
+            <label className="block text-sm font-bold text-gray-800 mb-1">When did this happen?</label>
             <p className="text-xs text-gray-400 mb-3">
-              If you remember the date, add it below. If you are not sure, that is completely okay, just check the box.
+              If you remember the date, add it below. If you are not sure, check the box below.
             </p>
-            <input
-              type="date"
-              name="incidentDate"
-              value={formData.incidentDate}
-              onChange={handleChange}
+            <input type="date" name="incidentDate" value={formData.incidentDate} onChange={handleChange}
               max={new Date().toISOString().split('T')[0]}
               disabled={formData.dateUncertain}
-              className="w-full bg-purple-50 border-2 border-purple-100 text-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-400 transition-all disabled:opacity-40 disabled:cursor-not-allowed mb-3"
-            />
-            <label className="flex items-center gap-3 cursor-pointer group">
-              <input
-                type="checkbox"
-                name="dateUncertain"
-                checked={formData.dateUncertain}
-                onChange={handleChange}
-                className="w-4 h-4 accent-purple-700 flex-shrink-0"
-              />
-              <span className="text-sm text-gray-500 group-hover:text-gray-700 transition-colors">
-                I am not sure of the exact date, that is okay
-              </span>
+              className="w-full bg-purple-50 border-2 border-purple-100 text-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-400 transition-all disabled:opacity-40 mb-3" />
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input type="checkbox" name="dateUncertain" checked={formData.dateUncertain}
+                onChange={handleChange} className="w-4 h-4 accent-purple-700 flex-shrink-0" />
+              <span className="text-sm text-gray-500">I am not sure of the exact date,  that is okay</span>
             </label>
           </div>
 
@@ -326,13 +360,10 @@ function ReportPage() {
             </label>
             <p className="text-xs text-gray-400 mb-3">
               This helps us connect you with a support organisation in the right place.
-              You do not need to give your exact address just the state is enough.
+              Just the state is enough, no exact address needed.
             </p>
             <div className="relative">
-              <select
-                name="state"
-                value={formData.state}
-                onChange={handleChange}
+              <select name="state" value={formData.state} onChange={handleChange}
                 className="w-full appearance-none bg-purple-50 border-2 border-purple-100 text-gray-700 rounded-xl px-4 py-3 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-400 transition-all">
                 <option value="">Choose the state...</option>
                 {NIGERIAN_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
@@ -348,17 +379,11 @@ function ReportPage() {
               <span className="text-gray-400 font-normal ml-1">(optional)</span>
             </label>
             <p className="text-xs text-gray-400 mb-3">
-              For example; Ikeja, Enugu North, Wuse, Owerri Municipal.
-              This helps narrow down the right support near you. Leave it empty if you prefer not to say.
+              For example; Ikeja, Enugu North, Wuse. Leave empty if you prefer not to say.
             </p>
-            <input
-              type="text"
-              name="lga"
-              value={formData.lga}
-              onChange={handleChange}
+            <input type="text" name="lga" value={formData.lga} onChange={handleChange}
               placeholder="e.g. Ikeja, Enugu North, Wuse..."
-              className="w-full bg-purple-50 border-2 border-purple-100 text-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-400 transition-all placeholder-gray-400"
-            />
+              className="w-full bg-purple-50 border-2 border-purple-100 text-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-400 transition-all placeholder-gray-400" />
           </div>
 
           {/* Contact Email */}
@@ -369,41 +394,27 @@ function ReportPage() {
             </label>
             <p className="text-xs text-gray-400 mb-3">
               If you add your email, we will send your Case ID and notify you when something changes.
-              If you leave this empty, your report is still completely valid
-              you can always track it using your Case ID.
+              Leave empty to stay fully anonymous.
             </p>
-            <input
-              type="email"
-              name="contactEmail"
-              value={formData.contactEmail}
-              onChange={handleChange}
+            <input type="email" name="contactEmail" value={formData.contactEmail} onChange={handleChange}
               placeholder="your@email.com"
-              className="w-full bg-purple-50 border-2 border-purple-100 text-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-400 transition-all placeholder-gray-400"
-            />
+              className="w-full bg-purple-50 border-2 border-purple-100 text-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-400 transition-all placeholder-gray-400" />
           </div>
 
           {/* Consent */}
           <div className="bg-purple-50 rounded-2xl p-5 border-2 border-purple-100">
             <label className="flex items-start gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                name="consent"
-                checked={formData.consent}
-                onChange={handleChange}
-                className="mt-0.5 w-4 h-4 accent-purple-700 flex-shrink-0"
-              />
+              <input type="checkbox" name="consent" checked={formData.consent} onChange={handleChange}
+                className="mt-0.5 w-4 h-4 accent-purple-700 flex-shrink-0" />
               <span className="text-xs text-gray-600 leading-relaxed">
-                I understand that my report is anonymous and will be shared only with a verified
-                support organisation in my state. I have read and accept the{' '}
-                <a href="/privacy-policy" className="text-purple-700 font-bold hover:underline">
-                  Privacy Policy
-                </a>.
+                I understand that my report is anonymous and will be shared only with a verified support
+                organisation in my state. I have read and accept the{' '}
+                <a href="/privacy-policy" className="text-purple-700 font-bold hover:underline">Privacy Policy</a>.
                 <span className="text-red-500 ml-1">*</span>
               </span>
             </label>
           </div>
 
-          {/* Error */}
           {error && (
             <div className="flex items-start gap-3 bg-red-50 border-2 border-red-100 text-red-700 rounded-xl px-4 py-3">
               <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
@@ -411,23 +422,29 @@ function ReportPage() {
             </div>
           )}
 
-          {/* Submit */}
-          <button
-            onClick={handleSubmit}
-            disabled={loading}
-            className="w-full flex items-center justify-center gap-2.5 bg-purple-700 hover:bg-purple-800 disabled:bg-purple-300 text-white py-4 rounded-xl font-bold text-base transition-all shadow-xl hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:translate-y-0">
-            {loading ? (
-              <>
-                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                Submitting your report...
-              </>
-            ) : (
-              <>Send My Report Safely <ArrowRight className="w-4 h-4" /></>
-            )}
-          </button>
+          {/* Bottom actions */}
+          <div className="space-y-3">
+            <button onClick={handleSubmit} disabled={loading}
+              className="w-full flex items-center justify-center gap-2.5 bg-purple-700 hover:bg-purple-800 disabled:bg-purple-300 text-white py-4 rounded-xl font-bold text-base transition-all shadow-xl hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:translate-y-0">
+              {loading ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  Submitting your report...
+                </>
+              ) : (
+                <>Send My Report Safely <ArrowRight className="w-4 h-4" /></>
+              )}
+            </button>
+
+            <button onClick={handleSaveDraft}
+              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-white hover:bg-purple-50 text-purple-700 font-semibold text-sm border border-purple-200 transition-all">
+              <Save className="w-4 h-4" />
+              {draftSaved ? 'Draft Saved ✓' : 'Save as Draft, Continue Later'}
+            </button>
+          </div>
 
           <p className="text-center text-xs text-gray-400">
-            🔒 Your report is encrypted and stored securely. No one can identify you from this.
+            🔒 Encrypted and stored securely. No one can identify you from this report.
           </p>
         </div>
       </div>

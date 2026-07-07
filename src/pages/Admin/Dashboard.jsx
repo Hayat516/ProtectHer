@@ -32,7 +32,6 @@ function AdminDashboard() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [selectedReport, setSelectedReport] = useState(null)
   const [selectedReportLogs, setSelectedReportLogs] = useState([])
-  const [selectedReportSignedUrl, setSelectedReportSignedUrl] = useState(null)
   const [selectedNGO, setSelectedNGO] = useState(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -41,6 +40,8 @@ function AdminDashboard() {
   const [actionLoading, setActionLoading] = useState(false)
   const [actionError, setActionError] = useState('')
   const [actionSuccess, setActionSuccess] = useState('')
+  const [assigningNGO, setAssigningNGO] = useState(false)
+  const [assignNote, setAssignNote] = useState('')
 
   const adminName = sessionStorage.getItem('admin_name')
   const adminId = sessionStorage.getItem('admin_id')
@@ -72,65 +73,82 @@ function AdminDashboard() {
 
   const openReportDetail = async (r) => {
     setSelectedReport(r)
-    setSelectedReportSignedUrl(null)
     setSelectedReportLogs([])
-
     const { data: logs } = await supabase
       .from('case_status_logs').select('*')
       .eq('case_id', r.case_id).order('created_at', { ascending: true })
     setSelectedReportLogs(logs || [])
+  }
 
-    if (r.evidence_file_url) {
-      const parts = r.evidence_file_url.split('/evidence/')
-      const fileName = parts[1]
-      if (fileName) {
-        const { data: urlData } = await supabase.storage
-          .from('evidence').createSignedUrl(decodeURIComponent(fileName), 3600)
-        setSelectedReportSignedUrl(urlData?.signedUrl || null)
-      }
+  const handleManualAssign = async (ngo) => {
+    if (!selectedReport) return
+    setAssigningNGO(true)
+    const { error } = await supabase.from('reports').update({
+      assigned_ngo_id: ngo.id,
+      assigned_ngo_name: ngo.name,
+      assigned_ngo_phone: ngo.phone || null,
+      assigned_ngo_email: ngo.email || null,
+      assigned_ngo_address: ngo.address || null,
+      ngo_accepted: true,
+      status: 'assigned',
+    }).eq('case_id', selectedReport.case_id)
+
+    if (!error) {
+      await supabase.from('case_status_logs').insert([{
+        case_id: selectedReport.case_id,
+        old_status: selectedReport.status,
+        new_status: 'assigned',
+        note: `Manually assigned to ${ngo.name} by admin.${assignNote ? ' Note: ' + assignNote : ''}`,
+      }])
+      setAssignNote('')
+      await fetchAll()
+      // Refresh modal
+      const { data: updated } = await supabase.from('reports').select('*').eq('case_id', selectedReport.case_id).single()
+      if (updated) await openReportDetail(updated)
     }
+    setAssigningNGO(false)
   }
 
   const handleDeleteReport = async (caseId) => {
-    if (!window.confirm(`Permanently delete case ${caseId}? This cannot be undone.`)) return
-    await supabase.from('case_status_logs').delete().eq('case_id', caseId)
-    await supabase.from('deletion_requests').delete().eq('case_id', caseId)
-    await supabase.from('reports').delete().eq('case_id', caseId)
-    setSelectedReport(null)
-    fetchAll()
+  if (!window.confirm(`Permanently delete case ${caseId}? This cannot be undone.`)) return
+  
+  const { error: logsError } = await supabase.from('case_status_logs').delete().eq('case_id', caseId)
+  const { error: delError } = await supabase.from('deletion_requests').delete().eq('case_id', caseId)
+  const { error: reportError } = await supabase.from('reports').delete().eq('case_id', caseId)
+  
+  console.log('Logs delete error:', logsError)
+  console.log('Deletion requests delete error:', delError)
+  console.log('Report delete error:', reportError)
+  
+  setSelectedReport(null)
+  setReports(prev => prev.filter(r => r.case_id !== caseId))
+  setDeletionRequests(prev => prev.filter(d => d.case_id !== caseId))
+}
+
+ const handleApproveDeletion = async (req) => {
+  await supabase.from('case_status_logs').delete().eq('case_id', req.case_id)
+  await supabase.from('deletion_requests').delete().eq('id', req.id)
+  await supabase.from('reports').delete().eq('case_id', req.case_id)
+  // Update state immediately
+  setDeletionRequests(prev => prev.filter(d => d.id !== req.id))
+  setReports(prev => prev.filter(r => r.case_id !== req.case_id))
+  if (req.victim_email) {
+    try {
+      await emailjs.send(
+        import.meta.env.VITE_EMAILJS_SERVICE_ID,
+        import.meta.env.VITE_EMAILJS_NGO_APPROVAL_TEMPLATE,
+        {
+          to_email: req.victim_email,
+          subject_line: 'Your ProtectHer Report Has Been Deleted',
+          message_body: `Your request to delete case ${req.case_id} has been processed.\n\nYour report and all associated data have been permanently removed.\n\nIf you need support in future, ProtectHer is here for you.\n\n— ProtectHer Admin`,
+        },
+        import.meta.env.VITE_EMAILJS_PUBLIC_KEY
+      )
+    } catch (e) { console.error('Deletion email failed:', e) }
   }
-
-  const handleApproveDeletion = async (req) => {
-    // Delete report and all related data
-    await supabase.from('case_status_logs').delete().eq('case_id', req.case_id)
-    await supabase.from('deletion_requests').delete().eq('id', req.id)
-    await supabase.from('reports').delete().eq('case_id', req.case_id)
-
-    // Notify victim if email available
-    if (req.victim_email) {
-      try {
-        await emailjs.send(
-          import.meta.env.VITE_EMAILJS_SERVICE_ID,
-          import.meta.env.VITE_EMAILJS_NGO_APPROVAL_TEMPLATE,
-          {
-            to_email: req.victim_email,
-            subject_line: 'Your ProtectHer Report Has Been Deleted',
-            message_body:
-              `Your request to delete case ${req.case_id} has been processed.\n\n` +
-              `Your report and all associated data have been permanently removed from our system.\n\n` +
-              `If you need support in the future, ProtectHer is always here for you.\n\n` +
-              `— ProtectHer Admin`,
-          },
-          import.meta.env.VITE_EMAILJS_PUBLIC_KEY
-        )
-      } catch (e) { console.error('Deletion email failed:', e) }
-    }
-    fetchAll()
-  }
-
+}
   const handleRejectDeletion = async (req) => {
-    await supabase.from('deletion_requests')
-      .update({ status: 'rejected' }).eq('id', req.id)
+    await supabase.from('deletion_requests').update({ status: 'rejected' }).eq('id', req.id)
     fetchAll()
   }
 
@@ -149,39 +167,22 @@ function AdminDashboard() {
     setActionError('')
     const newStatus = actionModal.type === 'approve' ? 'approved' : 'rejected'
     try {
-      const { error: dbError } = await supabase
-        .from('ngos').update({ status: newStatus }).eq('id', actionModal.ngo.id)
+      const { error: dbError } = await supabase.from('ngos').update({ status: newStatus }).eq('id', actionModal.ngo.id)
       if (dbError) throw dbError
-
       const templateParams = actionModal.type === 'approve'
         ? {
             to_email: actionModal.ngo.email,
             subject_line: 'Your ProtectHer NGO Application Has Been Approved',
-            message_body:
-              `Hello ${actionModal.ngo.name},\n\nYour organisation has been approved as a ProtectHer NGO partner.\n\n` +
-              `Login here: ${window.location.origin}/ngo/login\n\nYour login email: ${actionModal.ngo.email}\n\n` +
-              `— ProtectHer Admin`,
+            message_body: `Hello ${actionModal.ngo.name},\n\nYour organisation has been approved as a ProtectHer NGO partner.\n\nLogin here: ${window.location.origin}/ngo/login\n\nYour login email: ${actionModal.ngo.email}\n\nOnce logged in, you will see cases from your state.\n\n— ProtectHer Admin\nSafe. Anonymous. Trusted.`,
           }
         : {
             to_email: actionModal.ngo.email,
             subject_line: 'Update on Your ProtectHer NGO Application',
-            message_body:
-              `Hello ${actionModal.ngo.name},\n\nWe are unable to approve your application at this time.\n\n` +
-              `Reason: ${actionReason.trim()}\n\n— ProtectHer Admin`,
+            message_body: `Hello ${actionModal.ngo.name},\n\nWe are unable to approve your application at this time.\n\nReason: ${actionReason.trim()}\n\n— ProtectHer Admin`,
           }
-
       try {
-        await emailjs.send(
-          import.meta.env.VITE_EMAILJS_SERVICE_ID,
-          import.meta.env.VITE_EMAILJS_NGO_APPROVAL_TEMPLATE,
-          templateParams,
-          import.meta.env.VITE_EMAILJS_PUBLIC_KEY
-        )
-        setActionSuccess(
-          actionModal.type === 'approve'
-            ? `${actionModal.ngo.name} approved and notified.`
-            : `${actionModal.ngo.name} rejected and notified.`
-        )
+        await emailjs.send(import.meta.env.VITE_EMAILJS_SERVICE_ID, import.meta.env.VITE_EMAILJS_NGO_APPROVAL_TEMPLATE, templateParams, import.meta.env.VITE_EMAILJS_PUBLIC_KEY)
+        setActionSuccess(actionModal.type === 'approve' ? `${actionModal.ngo.name} approved and notified.` : `${actionModal.ngo.name} rejected and notified.`)
       } catch (e) {
         setActionSuccess(`Status updated. Email failed — contact ${actionModal.ngo.email} manually.`)
       }
@@ -196,10 +197,7 @@ function AdminDashboard() {
   const handleLogout = () => { sessionStorage.clear(); navigate('/admin/login') }
 
   const filteredReports = reports.filter(r => {
-    const matchSearch = !searchTerm ||
-      r.case_id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      r.state?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      r.incident_type?.toLowerCase().includes(searchTerm.toLowerCase())
+    const matchSearch = !searchTerm || r.case_id?.toLowerCase().includes(searchTerm.toLowerCase()) || r.state?.toLowerCase().includes(searchTerm.toLowerCase()) || r.incident_type?.toLowerCase().includes(searchTerm.toLowerCase())
     const matchStatus = statusFilter === 'all' || r.status === statusFilter
     return matchSearch && matchStatus
   })
@@ -229,14 +227,14 @@ function AdminDashboard() {
             <div className="hidden md:flex items-center gap-3">
               {pendingNGOs > 0 && (
                 <button onClick={() => setTab('ngos')}
-                  className="flex items-center gap-1.5 bg-amber-50 text-amber-800 text-xs font-bold px-3 py-1.5 rounded-full border border-amber-200 hover:bg-amber-100">
+                  className="flex items-center gap-1.5 bg-amber-50 text-amber-800 text-xs font-bold px-3 py-1.5 rounded-full border border-amber-200">
                   <AlertCircle className="w-3.5 h-3.5" /> {pendingNGOs} pending NGO
                 </button>
               )}
               {pendingDeletions > 0 && (
                 <button onClick={() => setTab('deletions')}
-                  className="flex items-center gap-1.5 bg-red-50 text-red-700 text-xs font-bold px-3 py-1.5 rounded-full border border-red-200 hover:bg-red-100">
-                  <Trash2 className="w-3.5 h-3.5" /> {pendingDeletions} deletion request{pendingDeletions > 1 ? 's' : ''}
+                  className="flex items-center gap-1.5 bg-red-50 text-red-700 text-xs font-bold px-3 py-1.5 rounded-full border border-red-200">
+                  <Trash2 className="w-3.5 h-3.5" /> {pendingDeletions} deletion{pendingDeletions > 1 ? 's' : ''}
                 </button>
               )}
               <span className="text-sm text-gray-500">{adminName}</span>
@@ -245,16 +243,14 @@ function AdminDashboard() {
                 <LogOut className="w-4 h-4" /> Logout
               </button>
             </div>
-            <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="md:hidden p-2 rounded-lg hover:bg-gray-100">
+            <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="md:hidden p-2 rounded-lg hover:bg-gray-100">
               {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
           </div>
           {mobileMenuOpen && (
             <div className="md:hidden py-3 border-t border-gray-100 space-y-1">
               <div className="px-3 py-1.5 text-xs text-gray-400">{adminName}</div>
-              <button onClick={handleLogout}
-                className="flex items-center gap-2 w-full px-3 py-2.5 text-sm font-semibold text-red-700 hover:bg-red-50 rounded-lg">
+              <button onClick={handleLogout} className="flex items-center gap-2 w-full px-3 py-2.5 text-sm font-semibold text-red-700 hover:bg-red-50 rounded-lg">
                 <LogOut className="w-4 h-4" /> Logout
               </button>
             </div>
@@ -288,14 +284,10 @@ function AdminDashboard() {
             { key: 'deletions', label: 'Deletion Requests', badge: pendingDeletions > 0 ? pendingDeletions : null },
           ].map((t) => (
             <button key={t.key} onClick={() => setTab(t.key)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${
-                tab === t.key ? 'bg-purple-700 text-white' : 'text-gray-500 hover:text-purple-700'
-              }`}>
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${tab === t.key ? 'bg-purple-700 text-white' : 'text-gray-500 hover:text-purple-700'}`}>
               {t.label}
               {t.badge && (
-                <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold ${
-                  tab === t.key ? 'bg-white/30 text-white' : 'bg-red-100 text-red-700'
-                }`}>{t.badge}</span>
+                <span className={`text-xs px-1.5 py-0.5 rounded-full font-bold ${tab === t.key ? 'bg-white/30 text-white' : 'bg-red-100 text-red-700'}`}>{t.badge}</span>
               )}
             </button>
           ))}
@@ -320,9 +312,7 @@ function AdminDashboard() {
                 <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
                   className="appearance-none bg-white border border-gray-200 rounded-xl px-4 py-2.5 pr-9 text-sm text-gray-600 font-medium focus:outline-none focus:ring-2 focus:ring-purple-400">
                   <option value="all">All Statuses</option>
-                  {Object.entries(STATUS_LABELS).map(([key, val]) => (
-                    <option key={key} value={key}>{val.label}</option>
-                  ))}
+                  {Object.entries(STATUS_LABELS).map(([key, val]) => <option key={key} value={key}>{val.label}</option>)}
                 </select>
                 <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
               </div>
@@ -337,15 +327,17 @@ function AdminDashboard() {
                 </div>
               ) : filteredReports.map((r) => {
                 const s = STATUS_LABELS[r.status] || STATUS_LABELS['submitted']
+                const noNGO = !r.assigned_ngo_name
                 return (
                   <div key={r.case_id}
-                    className="bg-white rounded-2xl border border-gray-100 p-4 hover:border-purple-200 hover:shadow-sm transition-all">
+                    className={`bg-white rounded-2xl border p-4 hover:shadow-sm transition-all ${noNGO && r.status === 'submitted' ? 'border-amber-200' : 'border-gray-100 hover:border-purple-200'}`}>
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-2 flex-wrap">
                           <span className="font-mono font-bold text-gray-900 text-sm">{r.case_id}</span>
                           <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${s.color}`}>{s.label}</span>
                           {r.evidence_file_url && <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-semibold">📎 Evidence</span>}
+                          {noNGO && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-semibold">No NGO</span>}
                           {r.ngo_accepted === false && <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-semibold">NGO Declined</span>}
                         </div>
                         <div className="flex flex-wrap gap-3 text-xs text-gray-400">
@@ -392,9 +384,7 @@ function AdminDashboard() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                       <span className="font-mono font-bold text-gray-900 text-sm">{req.case_id}</span>
-                      <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${
-                        req.status === 'pending' ? 'text-red-700 bg-red-50 border-red-200' : 'text-gray-500 bg-gray-50 border-gray-200'
-                      }`}>{req.status}</span>
+                      <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${req.status === 'pending' ? 'text-red-700 bg-red-50 border-red-200' : 'text-gray-500 bg-gray-50 border-gray-200'}`}>{req.status}</span>
                     </div>
                     <p className="text-xs text-gray-500 mb-1"><strong>Reason:</strong> {req.reason || 'No reason provided'}</p>
                     {req.victim_email && <p className="text-xs text-gray-400"><strong>Email:</strong> {req.victim_email}</p>}
@@ -427,7 +417,6 @@ function AdminDashboard() {
               const s = NGO_STATUS[ngo.status] || NGO_STATUS['pending']
               const activeCases = reports.filter(r => r.assigned_ngo_id === ngo.id && r.status !== 'resolved').length
               const resolvedCases = reports.filter(r => r.assigned_ngo_id === ngo.id && r.status === 'resolved').length
-
               return (
                 <div key={ngo.id}
                   className={`bg-white rounded-2xl border p-4 md:p-5 transition-all ${ngo.status === 'pending' ? 'border-amber-200 shadow-sm' : 'border-gray-100'}`}>
@@ -451,7 +440,6 @@ function AdminDashboard() {
                       )}
                     </div>
                     <div className="flex gap-2 flex-shrink-0 flex-wrap">
-                      {/* View details button — always visible */}
                       <button onClick={() => setSelectedNGO(ngo)}
                         className="text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 px-3 py-2 rounded-lg border border-purple-100 transition-colors">
                         <Eye className="w-3.5 h-3.5 inline mr-1" />Details
@@ -459,26 +447,18 @@ function AdminDashboard() {
                       {ngo.status === 'pending' && (
                         <>
                           <button onClick={() => handleOpenAction(ngo, 'approve')}
-                            className="text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg transition-colors">
-                            Approve
-                          </button>
+                            className="text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg transition-colors">Approve</button>
                           <button onClick={() => handleOpenAction(ngo, 'reject')}
-                            className="text-xs font-bold bg-white hover:bg-red-50 text-red-700 px-4 py-2 rounded-lg border border-red-200 transition-colors">
-                            Reject
-                          </button>
+                            className="text-xs font-bold bg-white hover:bg-red-50 text-red-700 px-4 py-2 rounded-lg border border-red-200 transition-colors">Reject</button>
                         </>
                       )}
                       {ngo.status === 'approved' && (
                         <button onClick={() => handleOpenAction(ngo, 'reject')}
-                          className="text-xs text-gray-400 hover:text-red-700 px-3 py-2 rounded-lg border border-gray-200 hover:border-red-200 font-semibold transition-colors">
-                          Revoke
-                        </button>
+                          className="text-xs text-gray-400 hover:text-red-700 px-3 py-2 rounded-lg border border-gray-200 hover:border-red-200 font-semibold transition-colors">Revoke</button>
                       )}
                       {ngo.status === 'rejected' && (
                         <button onClick={() => handleOpenAction(ngo, 'approve')}
-                          className="text-xs text-gray-400 hover:text-emerald-700 px-3 py-2 rounded-lg border border-gray-200 hover:border-emerald-200 font-semibold transition-colors">
-                          Re-approve
-                        </button>
+                          className="text-xs text-gray-400 hover:text-emerald-700 px-3 py-2 rounded-lg border border-gray-200 hover:border-emerald-200 font-semibold transition-colors">Re-approve</button>
                       )}
                     </div>
                   </div>
@@ -503,8 +483,7 @@ function AdminDashboard() {
                 <X className="w-5 h-5 text-gray-400" />
               </button>
             </div>
-
-            <div className="space-y-3 mb-5">
+            <div className="space-y-2 mb-5">
               {[
                 { icon: <Building className="w-4 h-4" />, label: 'Organisation', value: selectedNGO.name },
                 { icon: <MapPin className="w-4 h-4" />, label: 'State', value: selectedNGO.state || selectedNGO.states_covered },
@@ -522,41 +501,25 @@ function AdminDashboard() {
                   </div>
                 </div>
               ))}
-
               {selectedNGO.description && (
                 <div className="p-3 bg-gray-50 rounded-xl border border-gray-100">
                   <p className="text-xs text-gray-400 mb-1">About</p>
                   <p className="text-sm text-gray-700 leading-relaxed">{selectedNGO.description}</p>
                 </div>
               )}
-
-              {selectedNGO.website && (
-                <div className="p-3 bg-gray-50 rounded-xl border border-gray-100">
-                  <p className="text-xs text-gray-400 mb-1">Website</p>
-                  <a href={selectedNGO.website} target="_blank" rel="noopener noreferrer"
-                    className="text-sm text-purple-700 font-semibold hover:underline">{selectedNGO.website}</a>
-                </div>
-              )}
             </div>
-
             <div className="flex gap-3">
               {selectedNGO.status === 'pending' && (
                 <>
                   <button onClick={() => { setSelectedNGO(null); handleOpenAction(selectedNGO, 'approve') }}
-                    className="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm transition-colors">
-                    Approve
-                  </button>
+                    className="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm">Approve</button>
                   <button onClick={() => { setSelectedNGO(null); handleOpenAction(selectedNGO, 'reject') }}
-                    className="flex-1 py-3 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-sm transition-colors">
-                    Reject
-                  </button>
+                    className="flex-1 py-3 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-sm">Reject</button>
                 </>
               )}
               {selectedNGO.status !== 'pending' && (
                 <button onClick={() => setSelectedNGO(null)}
-                  className="flex-1 py-3 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-sm">
-                  Close
-                </button>
+                  className="flex-1 py-3 rounded-xl bg-gray-100 text-gray-700 font-bold text-sm">Close</button>
               )}
             </div>
           </div>
@@ -570,30 +533,24 @@ function AdminDashboard() {
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6">
             <div className="flex items-center justify-between mb-5">
               <div>
-                <h3 className="font-extrabold text-gray-900">
-                  {actionModal.type === 'approve' ? 'Approve NGO' : 'Reject NGO'}
-                </h3>
+                <h3 className="font-extrabold text-gray-900">{actionModal.type === 'approve' ? 'Approve NGO' : 'Reject NGO'}</h3>
                 <p className="text-xs text-gray-400 mt-0.5">{actionModal.ngo.name}</p>
               </div>
               <button onClick={() => setActionModal(null)} className="p-2 hover:bg-gray-100 rounded-xl">
                 <X className="w-5 h-5 text-gray-400" />
               </button>
             </div>
-
             {actionSuccess ? (
               <div className="text-center py-6">
                 <div className="text-4xl mb-4">{actionModal.type === 'approve' ? '✅' : '📋'}</div>
                 <p className="text-sm text-gray-600 mb-6">{actionSuccess}</p>
-                <button onClick={() => setActionModal(null)}
-                  className="bg-purple-700 text-white px-7 py-2.5 rounded-xl font-bold text-sm">Done</button>
+                <button onClick={() => setActionModal(null)} className="bg-purple-700 text-white px-7 py-2.5 rounded-xl font-bold text-sm">Done</button>
               </div>
             ) : (
               <>
                 {actionModal.type === 'reject' && (
                   <div className="mb-5">
-                    <label className="block text-sm font-semibold text-gray-800 mb-2">
-                      Reason <span className="text-red-500">*</span>
-                    </label>
+                    <label className="block text-sm font-semibold text-gray-800 mb-2">Reason <span className="text-red-500">*</span></label>
                     <textarea value={actionReason} onChange={(e) => setActionReason(e.target.value)}
                       rows={3} placeholder="e.g. Unable to verify documentation..."
                       className="w-full bg-gray-50 border-2 border-gray-200 text-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-red-300 resize-none placeholder-gray-400" />
@@ -601,19 +558,14 @@ function AdminDashboard() {
                 )}
                 {actionModal.type === 'approve' && (
                   <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 mb-5 text-sm text-emerald-800">
-                    They will receive an email with login instructions immediately.
+                    They will receive an email with login instructions.
                   </div>
                 )}
-                {actionError && (
-                  <div className="bg-red-50 border border-red-100 text-red-700 rounded-xl px-4 py-3 mb-4 text-sm">{actionError}</div>
-                )}
+                {actionError && <div className="bg-red-50 border border-red-100 text-red-700 rounded-xl px-4 py-3 mb-4 text-sm">{actionError}</div>}
                 <div className="flex gap-3">
-                  <button onClick={() => setActionModal(null)}
-                    className="flex-1 py-3 rounded-xl bg-gray-100 text-gray-700 font-bold text-sm">Cancel</button>
+                  <button onClick={() => setActionModal(null)} className="flex-1 py-3 rounded-xl bg-gray-100 text-gray-700 font-bold text-sm">Cancel</button>
                   <button onClick={handleConfirmAction} disabled={actionLoading}
-                    className={`flex-1 py-3 rounded-xl text-white font-bold text-sm disabled:opacity-50 flex items-center justify-center gap-2 ${
-                      actionModal.type === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-red-600 hover:bg-red-700'
-                    }`}>
+                    className={`flex-1 py-3 rounded-xl text-white font-bold text-sm disabled:opacity-50 flex items-center justify-center gap-2 ${actionModal.type === 'approve' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-red-600 hover:bg-red-700'}`}>
                     {actionLoading
                       ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Processing...</>
                       : actionModal.type === 'approve' ? 'Approve & Notify' : 'Reject & Notify'}
@@ -640,7 +592,7 @@ function AdminDashboard() {
                   className="flex items-center gap-1.5 text-xs text-red-600 bg-red-50 hover:bg-red-100 px-3 py-2 rounded-lg font-bold border border-red-100 transition-colors">
                   <Trash2 className="w-3.5 h-3.5" /> Delete
                 </button>
-                <button onClick={() => { setSelectedReport(null); setSelectedReportLogs([]); setSelectedReportSignedUrl(null) }}
+                <button onClick={() => { setSelectedReport(null); setSelectedReportLogs([]) }}
                   className="p-2 hover:bg-gray-100 rounded-xl">
                   <X className="w-5 h-5 text-gray-400" />
                 </button>
@@ -665,6 +617,7 @@ function AdminDashboard() {
               ))}
             </div>
 
+            {/* Assigned NGO info */}
             {selectedReport.assigned_ngo_name && (
               <div className="bg-purple-50 rounded-xl p-4 border border-purple-100 mb-5">
                 <p className="text-xs font-bold text-purple-600 uppercase tracking-widest mb-2">Assigned NGO</p>
@@ -683,6 +636,37 @@ function AdminDashboard() {
               </div>
             )}
 
+            {/* Manual assignment */}
+            {!selectedReport.assigned_ngo_name && (
+              <div className="bg-amber-50 rounded-xl p-4 border border-amber-200 mb-5">
+                <p className="text-xs font-bold text-amber-700 uppercase tracking-widest mb-2">⚠️ No NGO Assigned — Manual Assignment</p>
+                <p className="text-xs text-gray-500 mb-3 leading-relaxed">
+                  No NGO from {selectedReport.state} has accepted this case. Assign it manually to any approved NGO below.
+                </p>
+                <div className="space-y-2 max-h-40 overflow-y-auto mb-3">
+                  {ngos.filter(n => n.status === 'approved').map(ngo => (
+                    <div key={ngo.id} className="flex items-center justify-between gap-3 p-3 bg-white rounded-xl border border-gray-100">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-bold text-gray-800">{ngo.name}</p>
+                        <p className="text-xs text-gray-400">{ngo.state} — {ngo.specialization || 'General'}</p>
+                      </div>
+                      <button onClick={() => handleManualAssign(ngo)} disabled={assigningNGO}
+                        className="text-xs font-bold bg-purple-700 hover:bg-purple-800 text-white px-3 py-1.5 rounded-lg disabled:opacity-50 flex-shrink-0">
+                        {assigningNGO ? '...' : 'Assign'}
+                      </button>
+                    </div>
+                  ))}
+                  {ngos.filter(n => n.status === 'approved').length === 0 && (
+                    <p className="text-xs text-gray-400 text-center py-3">No approved NGOs available.</p>
+                  )}
+                </div>
+                <input type="text" value={assignNote} onChange={(e) => setAssignNote(e.target.value)}
+                  placeholder="Optional note for this assignment..."
+                  className="w-full bg-white border border-gray-200 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-purple-400" />
+              </div>
+            )}
+
+            {/* Description */}
             <div className="mb-5">
               <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Description</p>
               <p className="text-sm text-gray-700 leading-relaxed bg-gray-50 rounded-xl p-4 border border-gray-100">
@@ -690,21 +674,26 @@ function AdminDashboard() {
               </p>
             </div>
 
+            {/* Evidence */}
             {selectedReport.evidence_file_url && (
               <div className="mb-5">
                 <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Evidence Photo</p>
-                {selectedReportSignedUrl ? (
-                  <img src={selectedReportSignedUrl} alt="Evidence"
-                    className="w-full max-h-80 object-contain rounded-xl border border-gray-100 bg-gray-50" />
-                ) : (
-                  <div className="bg-gray-50 rounded-xl border p-8 text-center">
-                    <div className="w-5 h-5 border-2 border-purple-200 border-t-purple-700 rounded-full animate-spin mx-auto mb-2" />
-                    <p className="text-xs text-gray-400">Loading evidence...</p>
-                  </div>
-                )}
+                <img
+                  src={selectedReport.evidence_file_url}
+                  alt="Evidence"
+                  className="w-full max-h-80 object-contain rounded-xl border border-gray-100 bg-gray-50"
+                  onError={(e) => {
+                    e.target.style.display = 'none'
+                    e.target.nextSibling.style.display = 'block'
+                  }}
+                />
+                <div style={{ display: 'none' }} className="bg-red-50 rounded-xl border border-red-100 p-4 text-center">
+                  <p className="text-xs text-red-600">Failed to load evidence photo.</p>
+                </div>
               </div>
             )}
 
+            {/* Case History */}
             {selectedReportLogs.length > 0 && (
               <div>
                 <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">Case History</p>

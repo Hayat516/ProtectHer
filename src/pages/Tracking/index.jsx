@@ -86,12 +86,12 @@ function TrackingPage() {
               </button>
               <a href="https://google.com" target="_blank" rel="noopener noreferrer"
                 className="text-sm bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg font-bold">
-                ⚡ Quick Exit
+                 Quick Exit
               </a>
             </div>
             <div className="md:hidden flex items-center gap-2">
               <a href="https://google.com" target="_blank" rel="noopener noreferrer"
-                className="text-xs bg-red-600 text-white px-3 py-2 rounded-lg font-bold">⚡ Exit</a>
+                className="text-xs bg-red-600 text-white px-3 py-2 rounded-lg font-bold"> Exit</a>
               <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="p-2 rounded-lg hover:bg-gray-100">
                 {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
               </button>
@@ -105,7 +105,7 @@ function TrackingPage() {
               </button>
               <a href="https://google.com" target="_blank" rel="noopener noreferrer"
                 className="flex items-center gap-2 w-full px-3 py-2.5 text-sm font-bold text-red-600 hover:bg-red-50 rounded-lg">
-                ⚡ Quick Exit
+                 Quick Exit
               </a>
             </div>
           )}
